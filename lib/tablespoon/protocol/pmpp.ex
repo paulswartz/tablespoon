@@ -54,21 +54,22 @@ defmodule Tablespoon.Protocol.PMPP do
 
   @doc "Decode a binary into a PMPP message and any extra data"
   @spec decode(binary) :: {:ok, t, binary} | {:error, error, binary}
-  def decode(<<@flag, rest::binary>> = binary) do
+  def decode(<<@flag, rest::binary>>) do
     case :binary.split(rest, @flag) do
       [rest, extra] ->
         do_decode(rest, extra)
 
       [_] ->
-        {:error, :too_short, binary}
+        {:error, :too_short}
     end
   end
 
   def decode(binary) when is_binary(binary) do
-    {:error, :unknown, binary}
+    {:error, :unknown}
   end
 
-  defp do_decode(rest, extra) do
+  # must have at least two bytes for the CRC
+  defp do_decode(rest, extra) when byte_size(rest) >= 2 do
     rest = unreplace_flag(rest)
     rest_size = byte_size(rest)
     crc = :binary.part(rest, rest_size, -2)
@@ -87,6 +88,10 @@ defmodule Tablespoon.Protocol.PMPP do
     else
       {:error, :crc_failed, extra}
     end
+  end
+
+  defp do_decode(_rest, extra) do
+    {:error, :invalid, extra}
   end
 
   for {control, value} <- [poll: 0x33, information_poll: 0x13, information: 0x03] do

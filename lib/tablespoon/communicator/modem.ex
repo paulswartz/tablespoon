@@ -93,7 +93,12 @@ defmodule Tablespoon.Communicator.Modem do
   defp handle_stream_results(:closed, {:ok, comm, events}) do
     case Transport.connect(comm.transport) do
       {:ok, transport} ->
-        {:halt, {:ok, %{comm | transport: transport, buffer: ""}, events}}
+        events =
+          for query <- :queue.to_list(comm.queue) do
+            {:failed, query, :closed}
+          end
+
+        {:halt, {:ok, %{comm | transport: transport, buffer: "", queue: :queue.new()}, events}}
 
       e ->
         {:halt, e}
@@ -112,25 +117,30 @@ defmodule Tablespoon.Communicator.Modem do
     end
   end
 
+  defp handle_line(comm, "") do
+    {:ok, comm, []}
+  end
+
   defp handle_line(%{connected?: true} = comm, "OK") do
     {{:value, q}, queue} = :queue.out(comm.queue)
     comm = %{comm | queue: queue}
     {:ok, comm, [sent: q]}
   end
 
-  defp handle_line(%{connected?: true} = comm, "ERROR") do
+  defp handle_line(%{connected?: true} = comm, other)  do
+    error = if other == "ERROR" do
+      :error
+    else
+      {:unknown, other}
+    end
     {{:value, q}, queue} = :queue.out(comm.queue)
     comm = %{comm | queue: queue}
-    {:ok, comm, [{:failed, q, :error}]}
+    {:ok, comm, [{:failed, q, error}]}
   end
 
   defp handle_line(%{connected?: false} = comm, "OK") do
     # we get an OK when we first connect
     comm = %{comm | connected?: true}
-    {:ok, comm, []}
-  end
-
-  defp handle_line(comm, "") do
     {:ok, comm, []}
   end
 

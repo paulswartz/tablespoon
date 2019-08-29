@@ -1,6 +1,7 @@
 defmodule Tablespoon.Communicator.ModemTest do
   @moduledoc false
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Tablespoon.Communicator.Modem
   alias Tablespoon.Query
@@ -122,9 +123,63 @@ defmodule Tablespoon.Communicator.ModemTest do
       comm = Modem.new(FakeTransport.new())
       {:ok, comm} = Modem.connect(comm)
       {:ok, comm, []} = Modem.stream(comm, "partial line")
-      {:ok, comm, []} = Modem.stream(comm, :close)
+      {:ok, comm, [
+        ]} = Modem.stream(comm, :close)
       assert comm.buffer == ""
       assert comm.transport.connect_count == 2
     end
+
+    property "always returns sent or failed for a query" do
+      check all query_responses <- list_of(query_response(), min_length: 1) do
+        comm = Modem.new(FakeTransport.new())
+        {:ok, comm} = Modem.connect(comm)
+        {:ok, comm, []} = Modem.stream(comm, "OK\n")
+        {:ok, _comm, events} = Enum.reduce(query_responses, {:ok, comm, []}, fn {query, response}, {:ok, comm, events} ->
+          {:ok, comm, new_events} = Modem.send(comm, query)
+          {:ok, comm, new_events2} = Modem.stream(comm, response)
+          {:ok, comm, Enum.concat([events, new_events, new_events2])}
+        end)
+        assert length(events) == length(query_responses)
+        for {{query, response}, event} <- Enum.zip(query_responses, events) do
+          if response == "OK\n" do
+            assert event =={:sent, query}
+          else
+            assert {:failed, ^query, _} = event
+          end
+        end
+      end
+    end
+  end
+
+  defp query_response() do
+    tuple({
+      query(),
+      response()
+        })
+  end
+
+  defp query() do
+    type = one_of([:request, :cancel])
+    approach = one_of([:north, :east, :south, :west])
+    bind(type, fn type ->
+      bind(approach, fn approach ->
+        constant(Query.new(
+              id: 1,
+              type: type,
+              vehicle_id: "1",
+              intersection_alias: "int",
+              approach: approach,
+              event_time: System.system_time()))
+      end)
+    end)
+  end
+
+  def response() do
+    one_of([
+      constant("OK\n"),
+      constant("ERROR\n"),
+      constant("unknown\n"),
+      constant(:close)
+    ])
   end
 end

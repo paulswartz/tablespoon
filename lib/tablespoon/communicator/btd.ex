@@ -24,12 +24,12 @@ defmodule Tablespoon.Communicator.Btd do
 
   require Logger
 
-  @enforce_keys [:transport, :address, :group, :intersection_id]
-  defstruct @enforce_keys ++ [next_id: 1, in_flight: %{}]
+  @enforce_keys [:transport, :address, :group, :intersection_id, :ref]
+  defstruct @enforce_keys ++ [timeout: 60_000, next_id: 1, in_flight: %{}]
 
   @impl Tablespoon.Communicator
   def new(transport, opts) do
-    struct!(__MODULE__, [transport: transport] ++ opts)
+    struct!(__MODULE__, [transport: transport, ref: make_ref()] ++ opts)
   end
 
   @impl Tablespoon.Communicator
@@ -53,6 +53,8 @@ defmodule Tablespoon.Communicator.Btd do
 
     with {:ok, transport} <- Transport.send(comm.transport, pmpp) do
       in_flight = Map.put(comm.in_flight, comm.next_id, q)
+      # send ourselves a message to bail out if we don't get a response
+      Process.send_after(self(), {comm.ref, :timeout, comm.next_id, q}, comm.timeout)
 
       {:ok, %{comm | next_id: next_id(comm.next_id), in_flight: in_flight, transport: transport},
        []}
@@ -60,6 +62,23 @@ defmodule Tablespoon.Communicator.Btd do
   end
 
   @impl Tablespoon.Communicator
+  def stream(%__MODULE__{ref: ref} = comm, {ref, :timeout, id, q}) do
+    IO.inspect({:timeout, id, q, comm})
+
+    if Map.get(comm.in_flight, id) == q do
+      in_flight = Map.delete(comm.in_flight, id)
+      comm = %{comm | in_flight: in_flight}
+      {:ok, comm, [{:failed, q, :timeout}]}
+    else
+      :unknown
+    end
+  end
+
+  def stream(%__MODULE__{}, {ref, :timeout, _id, _}) when is_reference(ref) do
+    # timeout from an earlier version of this connection
+    :unknown
+  end
+
   def stream(%__MODULE__{} = comm, message) do
     with {:ok, transport, results} <- Transport.stream(comm.transport, message) do
       comm = %{comm | transport: transport}
@@ -123,7 +142,13 @@ defmodule Tablespoon.Communicator.Btd do
   defp handle_stream_results(:closed, {:ok, comm, events}) do
     case Transport.connect(comm.transport) do
       {:ok, transport} ->
-        {:halt, {:ok, %{comm | transport: transport}, events}}
+        failed =
+          for q <- Map.values(comm.in_flight) do
+            {:failed, q, :closed}
+          end
+
+        comm = %{comm | transport: transport, ref: make_ref(), next_id: 1, in_flight: %{}}
+        {:halt, {:ok, %{comm | transport: transport}, events ++ failed}}
 
       e ->
         {:halt, e}
